@@ -48,6 +48,11 @@ resource "aws_cognito_user_pool" "main" {
   tags = {
     Name = "main-user-pool"
   }
+
+  # Ignore schema changes after creation (Cognito doesn't allow schema modifications)
+  lifecycle {
+    ignore_changes = [schema]
+  }
 }
 
 # Cognito User Pool Client

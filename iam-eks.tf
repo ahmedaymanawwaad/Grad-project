@@ -22,7 +22,7 @@ resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
 resource "aws_eks_cluster" "main" {
   name     = "my-eks-cluster"
   role_arn = aws_iam_role.eks_cluster_role.arn
-  version  = "1.29"
+  version  = "1.30"
 
   vpc_config {
     subnet_ids = [
@@ -90,6 +90,10 @@ resource "aws_eks_node_group" "main" {
 
   # Instance configuration
   instance_types = ["t2.micro"]
+
+  # Use Amazon Linux 2023 (AL2023) instead of Amazon Linux 2
+  # AL2 support ends Nov 26, 2025 and won't be available for K8s 1.33+
+  ami_type = "AL2023_x86_64_STANDARD"
 
   # Scaling configuration
   scaling_config {
