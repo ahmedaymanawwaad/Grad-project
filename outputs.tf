@@ -49,3 +49,18 @@ output "eks_node_group_arn" {
 output "eks_node_group_status" {
   value = aws_eks_node_group.main.status
 }
+
+output "alb_security_group_id" {
+  description = "Security group ID for the Application Load Balancer"
+  value       = aws_security_group.alb.id
+}
+
+output "aws_load_balancer_controller_role_arn" {
+  description = "IAM role ARN for AWS Load Balancer Controller"
+  value       = aws_iam_role.aws_load_balancer_controller.arn
+}
+
+output "eks_oidc_provider_arn" {
+  description = "ARN of the EKS OIDC Provider"
+  value       = aws_iam_openid_connect_provider.eks.arn
+}
