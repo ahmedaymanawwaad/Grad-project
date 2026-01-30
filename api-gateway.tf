@@ -24,7 +24,9 @@ resource "aws_api_gateway_method" "proxy" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
   resource_id   = aws_api_gateway_resource.proxy.id
   http_method   = "ANY"
-  authorization = "NONE"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+
 
   request_parameters = {
     "method.request.path.proxy" = true
@@ -95,3 +97,10 @@ resource "aws_api_gateway_stage" "main" {
   stage_name    = "prod"
 }
 
+resource "aws_api_gateway_authorizer" "cognito" {
+  name          = "cognito-authorizer"
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  identity_source = "method.request.header.Authorization"
+  type          = "COGNITO_USER_POOLS"
+  provider_arns = [aws_cognito_user_pool.main.arn]
+}
