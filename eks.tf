@@ -1,3 +1,7 @@
+
+
+
+// Create EKS Cluster
 resource "aws_eks_cluster" "main" {
   name     = var.eks_cluster_name
   role_arn = aws_iam_role.eks_cluster_role.arn
@@ -49,7 +53,7 @@ resource "aws_eks_node_group" "main" {
     max_unavailable = var.eks_node_max_unavailable
   }
 
-  # Note: Remote access is not configured. Add remote_access block if SSH access is needed.
+
 
   # Ensure IAM role is ready before creating node group
   depends_on = [

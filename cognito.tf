@@ -85,16 +85,15 @@ resource "aws_cognito_user_pool_client" "main" {
   # Supported identity providers
   supported_identity_providers = ["COGNITO"]
 
-  Callback URLs (update these with your actual URLs)
   callback_urls = [
-    "http://localhost:3000/callback",
-    "https://your-domain.com/callback"
+     "https://<API_GATEWAY_ID>.execute-api.<REGION>.amazonaws.com/prod/callback"
   ]
 
   # Logout URLs
   logout_urls = [
-    "http://localhost:3000/logout",
-    "https://your-domain.com/logout"
+  
+       "https://<API_GATEWAY_ID>.execute-api.<REGION>.amazonaws.com/prod/logout"
+
   ]
 
   # OAuth scopes

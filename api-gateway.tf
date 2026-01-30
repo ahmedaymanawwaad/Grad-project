@@ -41,7 +41,7 @@ resource "aws_api_gateway_integration" "proxy" {
 
   integration_http_method = "ANY"
   type                    = "HTTP_PROXY"
-  uri                     = "http://httpbin.org/anything/{proxy}"
+  uri                     = "http://<YOUR_BACKEND_LB_OR_IP>:8080/{proxy}"
 
   request_parameters = {
     "integration.request.path.proxy" = "method.request.path.proxy"
@@ -64,7 +64,7 @@ resource "aws_api_gateway_integration" "proxy_root" {
 
   integration_http_method = "ANY"
   type                    = "HTTP_PROXY"
-  uri                     = "http://httpbin.org/anything"
+  uri                     = "http://<YOUR_FRONTEND_LB_OR_IP>:80/"
 }
 
 resource "aws_api_gateway_deployment" "main" {
