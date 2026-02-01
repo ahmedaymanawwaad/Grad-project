@@ -1,0 +1,207 @@
+trigger: none
+pr: none
+
+parameters:
+  - name: env
+    displayName: Environment
+    type: string
+    default: nonprod
+    values: [nonprod, prod]
+
+  - name: destroy
+    displayName: Destroy
+    type: boolean
+    default: false
+
+variables:
+  # 'terraform' if your code is in a generic 'terraform' folder, 
+  # OR '.' if it is in the root of the repo. 
+  # Based on your previous commands, it seems your code is deeper or in root. 
+  # I'll set it to '.' assuming this pipeline file sits next to main.tf
+  TF_DIR: '.' 
+  TF_VAR_FILE: '${{ parameters.env }}.tfvars'
+  AWS_SERVICE_CONNECTION: bahi-aws  
+  AWS_REGION: us-east-1
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+- checkout: self
+
+- task: TerraformInstaller@1
+  displayName: Install Terraform
+  inputs:
+    terraformVersion: latest
+
+# 1. Terraform Init
+- task: AWSShellScript@1
+  displayName: Terraform init
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+      cd "$(TF_DIR)"
+      terraform init
+
+# 2. Terraform Plan
+- task: AWSShellScript@1
+  displayName: Terraform plan
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+      cd "$(TF_DIR)"
+      
+      echo "Running plan for Environment: ${{ parameters.env }}"
+      
+      if [ "${{ parameters.destroy }}" = "True" ]; then
+        echo "Creating DESTROY plan..."
+        terraform plan -destroy -out=tfplan -var-file="$(TF_VAR_FILE)"
+      else
+        echo "Creating APPLY plan..."
+        terraform plan -out=tfplan -var-file="$(TF_VAR_FILE)"
+      fi
+
+# 3. Terraform Apply
+- task: AWSShellScript@1
+  displayName: Terraform apply
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+      cd "$(TF_DIR)"
+      
+      echo "Applying tfplan..."
+      # NOTE: When applying a plan file, do NOT pass -var-file again. 
+      terraform apply -auto-approve tfplan
+
+# 4. Install Tools (Kubectl, Helm)
+- task: KubectlInstaller@0
+  displayName: Install kubectl
+  inputs:
+    kubectlVersion: 'latest'
+
+- task: HelmInstaller@1
+  displayName: Install Helm
+  inputs:
+    helmVersionToInstall: 'latest'
+
+# 5. Configure Kubeconfig
+- task: AWSShellScript@1
+  displayName: Configure kubeconfig
+  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+      cd "$(TF_DIR)"
+      
+      # Get Cluster Name from Terraform Output
+      CLUSTER_NAME="$(terraform output -raw cluster_name)"
+      
+      echo "Updating kubeconfig for cluster: $CLUSTER_NAME in region $(AWS_REGION)..."
+      aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$(AWS_REGION)"
+      
+      kubectl get nodes
+
+# 6. Create Namespaces (Fixed: Uses AWSShellScript for credentials)
+- task: AWSShellScript@1
+  displayName: Create namespaces
+  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+      echo "Creating namespaces..."
+      kubectl create namespace ingress-nginx --dry-run=client -o yaml | kubectl apply -f -
+      kubectl create namespace nexus --dry-run=client -o yaml | kubectl apply -f -
+      kubectl create namespace sonarqube --dry-run=client -o yaml | kubectl apply -f -
+      kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+
+# 7. Helm Installs (Fixed: Uses AWSShellScript for credentials)
+- task: AWSShellScript@1
+  displayName: Install ingress-nginx
+  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+      helm upgrade --install ingress-nginx ingress-nginx \
+        --namespace ingress-nginx \
+        --repo https://kubernetes.github.io/ingress-nginx \
+        --wait --timeout 15m --atomic --cleanup-on-fail
+
+- task: AWSShellScript@1
+  displayName: Install Nexus
+  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+      helm upgrade --install nexus nexus-repository-manager \
+        --namespace nexus \
+        --repo https://sonatype.github.io/helm3-charts/ \
+        --wait --timeout 15m --atomic --cleanup-on-fail
+
+- task: AWSShellScript@1
+  displayName: Install SonarQube
+  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+      helm upgrade --install sonarqube sonarqube \
+        --namespace sonarqube \
+        --repo https://SonarSource.github.io/helm-chart-sonarqube \
+        --wait --timeout 15m --atomic --cleanup-on-fail
+
+- task: AWSShellScript@1
+  displayName: Install Argo CD
+  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+      helm upgrade --install argocd argo-cd \
+        --namespace argocd \
+        --repo https://argoproj.github.io/argo-helm \
+        --wait --timeout 15m --atomic --cleanup-on-fail
+
+# 8. Verification (Fixed: Uses AWSShellScript for credentials)
+- task: AWSShellScript@1
+  displayName: Verify platform services
+  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+      echo "Retrieving pod status..."
+      echo "--- Ingress Nginx ---"
+      kubectl get pods -n ingress-nginx
+      echo "--- Nexus ---"
+      kubectl get pods -n nexus
+      echo "--- SonarQube ---"
+      kubectl get pods -n sonarqube
+      echo "--- ArgoCD ---"
+      kubectl get pods -n argocd

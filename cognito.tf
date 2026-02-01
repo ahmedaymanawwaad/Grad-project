@@ -15,7 +15,7 @@ resource "aws_cognito_user_pool" "main" {
   schema {
     name                = "email"
     attribute_data_type = "String"
-    required            = true
+    required            = true 
     mutable             = true
   }
 
@@ -85,30 +85,6 @@ resource "aws_cognito_user_pool_client" "main" {
   # Supported identity providers
   supported_identity_providers = ["COGNITO"]
 
-  callback_urls = [
-     "https://<API_GATEWAY_ID>.execute-api.<REGION>.amazonaws.com/prod/callback"
-  ]
-
-  # Logout URLs
-  logout_urls = [
-  
-       "https://<API_GATEWAY_ID>.execute-api.<REGION>.amazonaws.com/prod/logout"
-
-  ]
-
-  # OAuth scopes
-  allowed_oauth_scopes = [
-    "email",
-    "openid",
-    "profile"
-  ]
-
-  # OAuth flows
-  allowed_oauth_flows = [
-    "code",
-    "implicit"
-  ]
-  allowed_oauth_flows_user_pool_client = true
 }
 
 # Cognito User Pool Domain
