@@ -98,7 +98,7 @@ spec:
         ports:
         - containerPort: 80
 ---
-apiVersion: v1
+apiVersion: v1kubectl get pods -n kube-system | grep aws-load-balancer-controller
 kind: Service
 metadata:
   name: nginx-service
