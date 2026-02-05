@@ -1,0 +1,251 @@
+trigger: none
+pr: none
+
+parameters:
+  - name: env
+    displayName: Environment
+    type: string
+    default: nonprod
+    values: [nonprod, prod]
+
+  - name: destroy
+    displayName: Destroy
+    type: boolean
+    default: false
+
+variables:
+  TF_DIR: '.' 
+  TF_VAR_FILE: '${{ parameters.env }}.tfvars'
+  AWS_SERVICE_CONNECTION: bahi-aws  
+  AWS_REGION: us-east-1
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+- checkout: self
+
+- task: TerraformInstaller@1
+  displayName: Install Terraform
+  inputs:
+    terraformVersion: latest
+
+# 1. Terraform Init
+- task: AWSShellScript@1
+  displayName: Terraform init
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+      cd "$(TF_DIR)"
+      terraform init
+
+# 2. Terraform Plan
+- task: AWSShellScript@1
+  displayName: Terraform plan
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+      cd "$(TF_DIR)"
+      
+      echo "Running plan for Environment: ${{ parameters.env }}"
+      
+      if [ "${{ parameters.destroy }}" = "True" ]; then
+        echo "Creating DESTROY plan..."
+        terraform plan -destroy -out=tfplan -var-file="$(TF_VAR_FILE)"
+      else
+        echo "Creating APPLY plan..."
+        terraform plan -out=tfplan -var-file="$(TF_VAR_FILE)"
+      fi
+
+# 3. Terraform Apply
+- task: AWSShellScript@1
+  displayName: Terraform apply
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+      cd "$(TF_DIR)"
+      
+      echo "Applying tfplan..."
+      terraform apply -auto-approve tfplan
+
+# 4. Install Tools (Kubectl, Helm)
+- task: KubectlInstaller@0
+  displayName: Install kubectl
+  inputs:
+    kubectlVersion: 'latest'
+
+- task: HelmInstaller@1
+  displayName: Install Helm
+  inputs:
+    helmVersionToInstall: 'latest'
+
+# 5. Configure Kubeconfig
+- task: AWSShellScript@1
+  displayName: Configure kubeconfig
+  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+      cd "$(TF_DIR)"
+      
+      # Get Cluster Name from Terraform Output
+      CLUSTER_NAME="$(terraform output -raw cluster_name)"
+      
+      echo "Updating kubeconfig for cluster: $CLUSTER_NAME in region $(AWS_REGION)..."
+      aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$(AWS_REGION)"
+      
+      kubectl get nodes
+- task: AWSShellScript@1
+  displayName: 'Export AWS Credentials'
+  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      # Capture credentials from the Service Connection
+      echo "##vso[task.setvariable variable=AWS_ACCESS_KEY_ID;isSecret=true]$AWS_ACCESS_KEY_ID"
+      echo "##vso[task.setvariable variable=AWS_SECRET_ACCESS_KEY;isSecret=true]$AWS_SECRET_ACCESS_KEY"
+      echo "##vso[task.setvariable variable=AWS_SESSION_TOKEN;isSecret=true]$AWS_SESSION_TOKEN"
+# 7. Helm Installs (Using Plugins with 15m timeout)
+# 7. Helm Installs (Fixed Chart Names & Credentials Bridge)
+- task: AWSShellScript@1
+  displayName: Cleanup Stuck Nexus Release
+  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+      echo "Checking/Unlocking Nexus release..."
+      if helm status nexus -n nexus >/dev/null 2>&1; then
+        STATUS=$(helm status nexus -n nexus -o json | jq -r .info.status)
+        echo "Current status: $STATUS"
+        if [[ "$STATUS" == "pending-install" || "$STATUS" == "pending-upgrade" || "$STATUS" == "pending-rollback" ]]; then
+          echo "Release stuck. Rolling back..."
+          helm rollback nexus -n nexus || helm uninstall nexus -n nexus
+        fi
+      fi
+
+- task: HelmDeploy@0
+  displayName: Install Nexus
+  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
+  inputs:
+    connectionType: None
+    command: upgrade
+    chartType: Name
+    chartName: nexus-repository-manager  # CHANGED: Removed 'sonatype/'
+    releaseName: nexus
+    namespace: nexus
+    install: true
+    arguments: '--repo https://sonatype.github.io/helm3-charts/ --wait --timeout 3m --atomic --cleanup-on-fail'
+  env:
+    AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+    AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+    AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
+    AWS_REGION: $(AWS_REGION)
+
+- task: HelmDeploy@0
+  displayName: Install SonarQube
+  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
+  inputs:
+    connectionType: None
+    command: upgrade
+    chartType: Name
+    chartName: sonarqube  # CHANGED: Removed 'sonarqube/'
+    releaseName: sonarqube
+    namespace: sonarqube
+    install: true
+    arguments: '--repo https://SonarSource.github.io/helm-chart-sonarqube --wait --timeout 3m --cleanup-on-fail'
+  env:
+    AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+    AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+    AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
+    AWS_REGION: $(AWS_REGION)
+
+- task: HelmDeploy@0
+  displayName: Install Argo CD
+  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
+  inputs:
+    connectionType: None
+    command: upgrade
+    chartType: Name
+    chartName: argo-cd  # CHANGED: Removed 'argo/'
+    releaseName: argocd
+    namespace: argocd
+    install: true
+    arguments: '--repo https://argoproj.github.io/argo-helm --wait --timeout 5m --cleanup-on-fail'
+  env:
+    AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+    AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+    AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
+    AWS_REGION: $(AWS_REGION)
+
+- task: HelmDeploy@0
+  displayName: Install SonarQube
+  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
+  inputs:
+    connectionType: None
+    command: upgrade
+    chartType: Name
+    chartName: sonarqube/sonarqube
+    releaseName: sonarqube
+    namespace: sonarqube
+    install: true
+    arguments: '--repo https://SonarSource.github.io/helm-chart-sonarqube --wait --timeout 3m --atomic --cleanup-on-fail'
+  env:
+    AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+    AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+    AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
+    AWS_REGION: $(AWS_REGION)  
+
+- task: HelmDeploy@0
+  displayName: Install Argo CD
+  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
+  inputs:
+    connectionType: None
+    command: upgrade
+    chartType: Name
+    chartName: argo-cd
+    releaseName: argocd
+    namespace: argocd
+    install: true
+    arguments: '--repo https://argoproj.github.io/argo-helm --wait --timeout 3m --atomic --cleanup-on-fail'
+  env:
+    AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+    AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+    AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
+    AWS_REGION: $(AWS_REGION)  
+
+# 8. Verification
+- task: AWSShellScript@1
+  displayName: Verify platform services
+  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+      echo "Retrieving pod status..."
+      echo "--- Ingress Nginx ---"
+      kubectl get pods -n ingress-nginx
+      echo "--- Nexus ---"
+      kubectl get pods -n nexus
+      echo "--- SonarQube ---"
+      kubectl get pods -n sonarqube
+      echo "--- ArgoCD ---"
+      kubectl get pods -n argocd
