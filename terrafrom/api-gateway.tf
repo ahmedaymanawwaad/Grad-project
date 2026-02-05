@@ -47,7 +47,20 @@ resource "aws_api_gateway_method" "proxy" {
 }
 
 # ===============================
-# HTTP Proxy → NLB
+# VPC Link for NLB
+# ===============================
+resource "aws_api_gateway_vpc_link" "nlb" {
+  name        = "${var.eks_cluster_name}-nlb-vpc-link"
+  target_arns = [aws_lb.my_nlb.arn]
+  description = "VPC link for the NLB"
+  
+  tags = {
+    Name = "${var.eks_cluster_name}-nlb-vpc-link"
+  }
+}
+
+# ===============================
+# HTTP Integration → NLB via VPC Link
 # ===============================
 resource "aws_api_gateway_integration" "proxy" {
   rest_api_id = aws_api_gateway_rest_api.main.id
@@ -56,8 +69,10 @@ resource "aws_api_gateway_integration" "proxy" {
 
   type                    = "HTTP_PROXY"
   integration_http_method = "ANY"
+  connection_type         = "VPC_LINK"
+  connection_id           = aws_api_gateway_vpc_link.nlb.id
 
-  uri = "http://<NLB_DNS_NAME>/{proxy}"
+  uri = "http://${aws_lb.my_nlb.dns_name}/{proxy}"
 
   request_parameters = {
     "integration.request.path.proxy" = "method.request.path.proxy"

@@ -67,31 +67,5 @@ resource "aws_eks_node_group" "main" {
   }
 }
 
-# Fargate Profile
-resource "aws_eks_fargate_profile" "main" {
-  cluster_name           = aws_eks_cluster.main.name
-  fargate_profile_name   = var.eks_fargate_profile_name
-  pod_execution_role_arn = aws_iam_role.eks_fargate_role.arn
 
-  subnet_ids = [
-    aws_subnet.private_subnet-1.id,
-    aws_subnet.private_subnet-2.id
-  ]
-
-  dynamic "selector" {
-    for_each = var.eks_fargate_selectors
-    content {
-      namespace = selector.value.namespace
-      labels    = selector.value.labels
-    }
-  }
-
-  tags = {
-    Name = var.eks_fargate_profile_name
-  }
-
-  depends_on = [
-    aws_iam_role_policy_attachment.eks_fargate_pod_execution_role_policy
-  ]
-}
 

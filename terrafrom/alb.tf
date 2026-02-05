@@ -1,56 +1,4 @@
 # ==============================================================================
-# Security Group for Application Load Balancer
-# ==============================================================================
-
-resource "aws_security_group" "alb" {
-  name        = "${var.eks_cluster_name}-alb-sg"
-  description = "Security group for Application Load Balancer used by EKS Ingress"
-  vpc_id      = aws_vpc.main_vpc.id
-
-  ingress {
-    description = "HTTP from internet"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "HTTPS from internet"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    description = "Allow all outbound traffic"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "${var.eks_cluster_name}-alb-sg"
-  }
-}
-
-# ==============================================================================
-# Security Group Rule: Allow ALB to communicate with EKS nodes
-# ==============================================================================
-
-resource "aws_security_group_rule" "alb_to_node" {
-  type                     = "ingress"
-  description              = "Allow ALB to communicate with EKS nodes"
-  from_port                = 0
-  to_port                  = 65535
-  protocol                 = "tcp"
-  source_security_group_id = aws_security_group.alb.id
-  security_group_id        = aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
-}
-
-# ==============================================================================
 # IAM Role for AWS Load Balancer Controller (Service Account)
 # ==============================================================================
 
@@ -81,10 +29,10 @@ resource "aws_iam_role" "aws_load_balancer_controller" {
   }
 }
 
-# IAM Policy for AWS Load Balancer Controller
+# IAM Policy for AWS Load Balancer Controller (NLB only - minimal configuration)
 resource "aws_iam_policy" "aws_load_balancer_controller" {
   name        = "${var.eks_cluster_name}-aws-load-balancer-controller-policy"
-  description = "IAM policy for AWS Load Balancer Controller"
+  description = "IAM policy for AWS Load Balancer Controller - NLB only"
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -109,107 +57,18 @@ resource "aws_iam_policy" "aws_load_balancer_controller" {
           "ec2:DescribeAvailabilityZones",
           "ec2:DescribeInternetGateways",
           "ec2:DescribeVpcs",
-          "ec2:DescribeVpcPeeringConnections",
           "ec2:DescribeSubnets",
-          "ec2:DescribeSecurityGroups",
-          "ec2:DescribeInstances",
           "ec2:DescribeNetworkInterfaces",
           "ec2:DescribeTags",
-          "ec2:GetCoipPoolUsage",
-          "ec2:DescribeCoipPools",
           "elasticloadbalancing:DescribeLoadBalancers",
           "elasticloadbalancing:DescribeLoadBalancerAttributes",
           "elasticloadbalancing:DescribeListeners",
-          "elasticloadbalancing:DescribeListenerCertificates",
-          "elasticloadbalancing:DescribeSSLPolicies",
-          "elasticloadbalancing:DescribeRules",
           "elasticloadbalancing:DescribeTargetGroups",
           "elasticloadbalancing:DescribeTargetGroupAttributes",
           "elasticloadbalancing:DescribeTargetHealth",
           "elasticloadbalancing:DescribeTags"
         ]
         Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "cognito-idp:DescribeUserPoolClient",
-          "acm:ListCertificates",
-          "acm:DescribeCertificate",
-          "iam:ListServerCertificates",
-          "iam:GetServerCertificate",
-          "waf-regional:GetWebACL",
-          "waf-regional:GetWebACLForResource",
-          "waf-regional:AssociateWebACL",
-          "waf-regional:DisassociateWebACL",
-          "wafv2:GetWebACL",
-          "wafv2:GetWebACLForResource",
-          "wafv2:AssociateWebACL",
-          "wafv2:DisassociateWebACL",
-          "shield:GetSubscriptionState",
-          "shield:DescribeProtection",
-          "shield:CreateProtection",
-          "shield:DeleteProtection"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "ec2:AuthorizeSecurityGroupIngress",
-          "ec2:RevokeSecurityGroupIngress"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "ec2:CreateSecurityGroup"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "ec2:CreateTags"
-        ]
-        Resource = "arn:aws:ec2:*:*:security-group/*"
-        Condition = {
-          StringEquals = {
-            "ec2:CreateAction" = "CreateSecurityGroup"
-          }
-          Null = {
-            "aws:RequestTag/elbv2.k8s.aws/cluster" = "false"
-          }
-        }
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "ec2:CreateTags",
-          "ec2:DeleteTags"
-        ]
-        Resource = "arn:aws:ec2:*:*:security-group/*"
-        Condition = {
-          Null = {
-            "aws:RequestTag/elbv2.k8s.aws/cluster" = "true"
-            "aws:ResourceTag/elbv2.k8s.aws/cluster" = "false"
-          }
-        }
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "ec2:AuthorizeSecurityGroupIngress",
-          "ec2:RevokeSecurityGroupIngress",
-          "ec2:DeleteSecurityGroup"
-        ]
-        Resource = "*"
-        Condition = {
-          Null = {
-            "aws:ResourceTag/elbv2.k8s.aws/cluster" = "false"
-          }
-        }
       },
       {
         Effect = "Allow"
@@ -229,8 +88,7 @@ resource "aws_iam_policy" "aws_load_balancer_controller" {
         Action = [
           "elasticloadbalancing:CreateListener",
           "elasticloadbalancing:DeleteListener",
-          "elasticloadbalancing:CreateRule",
-          "elasticloadbalancing:DeleteRule"
+          "elasticloadbalancing:ModifyListener"
         ]
         Resource = "*"
       },
@@ -243,26 +101,7 @@ resource "aws_iam_policy" "aws_load_balancer_controller" {
         Resource = [
           "arn:aws:elasticloadbalancing:*:*:targetgroup/*/*",
           "arn:aws:elasticloadbalancing:*:*:loadbalancer/net/*/*",
-          "arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*"
-        ]
-        Condition = {
-          Null = {
-            "aws:RequestTag/elbv2.k8s.aws/cluster" = "true"
-            "aws:ResourceTag/elbv2.k8s.aws/cluster" = "false"
-          }
-        }
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "elasticloadbalancing:AddTags",
-          "elasticloadbalancing:RemoveTags"
-        ]
-        Resource = [
-          "arn:aws:elasticloadbalancing:*:*:listener/net/*/*/*",
-          "arn:aws:elasticloadbalancing:*:*:listener/app/*/*/*",
-          "arn:aws:elasticloadbalancing:*:*:listener-rule/net/*/*/*",
-          "arn:aws:elasticloadbalancing:*:*:listener-rule/app/*/*/*"
+          "arn:aws:elasticloadbalancing:*:*:listener/net/*/*/*"
         ]
       },
       {
@@ -270,7 +109,6 @@ resource "aws_iam_policy" "aws_load_balancer_controller" {
         Action = [
           "elasticloadbalancing:ModifyLoadBalancerAttributes",
           "elasticloadbalancing:SetIpAddressType",
-          "elasticloadbalancing:SetSecurityGroups",
           "elasticloadbalancing:SetSubnets",
           "elasticloadbalancing:DeleteLoadBalancer",
           "elasticloadbalancing:ModifyTargetGroup",
@@ -287,41 +125,10 @@ resource "aws_iam_policy" "aws_load_balancer_controller" {
       {
         Effect = "Allow"
         Action = [
-          "elasticloadbalancing:AddTags"
-        ]
-        Resource = [
-          "arn:aws:elasticloadbalancing:*:*:targetgroup/*/*",
-          "arn:aws:elasticloadbalancing:*:*:loadbalancer/net/*/*",
-          "arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*"
-        ]
-        Condition = {
-          StringEquals = {
-            "elasticloadbalancing:CreateAction" = [
-              "CreateTargetGroup",
-              "CreateLoadBalancer"
-            ]
-            "aws:RequestTag/elbv2.k8s.aws/cluster" = var.eks_cluster_name
-          }
-        }
-      },
-      {
-        Effect = "Allow"
-        Action = [
           "elasticloadbalancing:RegisterTargets",
           "elasticloadbalancing:DeregisterTargets"
         ]
         Resource = "arn:aws:elasticloadbalancing:*:*:targetgroup/*/*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "elasticloadbalancing:SetWebAcl",
-          "elasticloadbalancing:ModifyListener",
-          "elasticloadbalancing:AddListenerCertificates",
-          "elasticloadbalancing:RemoveListenerCertificates",
-          "elasticloadbalancing:ModifyRule"
-        ]
-        Resource = "*"
       }
     ]
   })
@@ -351,6 +158,58 @@ resource "aws_iam_openid_connect_provider" "eks" {
 
   tags = {
     Name = "${var.eks_cluster_name}-oidc-provider"
+  }
+}
+
+# ==============================================================================
+# Network Load Balancer
+# ==============================================================================
+
+resource "aws_lb" "my_nlb" {
+  name               = "${var.eks_cluster_name}-nlb"
+  internal           = false
+  load_balancer_type = "network"
+  subnets            = [aws_subnet.public_subnet-1.id, aws_subnet.public_subnet-2.id]
+  enable_cross_zone_load_balancing = true
+
+
+  tags = {
+    Name = "${var.eks_cluster_name}-nlb"
+  }
+}
+
+# ==============================================================================
+# Target Group for Network Load Balancer
+# ==============================================================================
+
+resource "aws_lb_target_group" "nlb_target_group" {
+  name        = "${var.eks_cluster_name}-nlb-tg"
+  port        = 80
+  protocol    = "TCP"
+  vpc_id      = aws_vpc.main_vpc.id
+  target_type = "ip"
+
+  health_check {
+    protocol = "TCP"
+  }
+
+  tags = {
+    Name = "${var.eks_cluster_name}-nlb-tg"
+  }
+}
+
+# ==============================================================================
+# Network Load Balancer Listener
+# ==============================================================================
+
+resource "aws_lb_listener" "nlb_listener" {
+  load_balancer_arn = aws_lb.my_nlb.arn
+  port              = "80"
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.nlb_target_group.arn
   }
 }
 

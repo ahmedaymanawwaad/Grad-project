@@ -1,8 +1,8 @@
 terraform {
   backend "s3" {
-    bucket         = "grad-proj-nti"
+    bucket         = "backend-awwad"
     key            = "terraform.tfstate"
-    region         = "us-east-1"
+    region         = "eu-central-1"
     dynamodb_table = "grad-proj-nti"
     encrypt        = true
   }
