@@ -72,3 +72,8 @@ output "nlb_target_group_arn" {
   description = "ARN of the Network Load Balancer target group"
   value       = aws_lb_target_group.nlb_target_group.arn
 }
+
+output "cluster_name" {
+  description = "Name of the EKS cluster"
+  value       = aws_eks_cluster.main.name
+}
