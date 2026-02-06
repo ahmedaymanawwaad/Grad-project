@@ -1,29 +1,3 @@
-name: $(Date:yyyyMMdd)$(Rev:.r)-Infrastructure
-trigger: none
-pr: none
-
-parameters:
-  - name: env
-    displayName: Environment
-    type: string
-    default: nonprod
-    values: [nonprod, prod]
-
-  - name: destroy
-    displayName: Destroy
-    type: boolean
-    default: false
-
-variables:
-  TF_DIR: 'terrafrom'
-  TF_VAR_FILE: '${{ parameters.env }}.tfvars'
-  AWS_SERVICE_CONNECTION: 'aws-awwad'
-  AWS_REGION: 'eu-central-1'
-
-pool:
-  vmImage: ubuntu-latest
-
-jobs:
 - job: Infrastructure
   displayName: 'Infrastructure Provisioning (VPC, EKS, Cognito, APIGW)'
   timeoutInMinutes: 120
@@ -44,37 +18,11 @@ jobs:
       inlineScript: |
         set -euo pipefail
         cd "$(TF_DIR)"
-        terraform init
-        
-        # Clean up any legacy Kubernetes resources from state if they exist
-        # This prevents connection errors during plan/apply/destroy
-        echo "Checking for legacy Kubernetes resources in state..."
-        
-        # List all resources in state
-        STATE_LIST=$(terraform state list 2>/dev/null || echo "")
-        
-        # Remove any Kubernetes resources that might be in state
-        if [ -n "$STATE_LIST" ]; then
-          echo "$STATE_LIST" | grep -E "^kubernetes_" | while read -r resource; do
-            if [ -n "$resource" ]; then
-              echo "Removing ${resource} from state (no longer managed by Terraform)..."
-              terraform state rm "${resource}" 2>/dev/null || echo "Warning: Could not remove ${resource} from state"
-            fi
-          done
-          
-          # Also check for helm resources
-          echo "$STATE_LIST" | grep -E "^helm_" | while read -r resource; do
-            if [ -n "$resource" ]; then
-              echo "Removing ${resource} from state (no longer managed by Terraform)..."
-              terraform state rm "${resource}" 2>/dev/null || echo "Warning: Could not remove ${resource} from state"
-            fi
-          done
-        else
-          echo "No state file found or state is empty."
-        fi
+        terraform init -input=false -var-file=$(TF_VAR_FILE)
 
+  # Terraform Plan (optional but recommended)
   - task: AWSShellScript@1
-    displayName: Terraform Apply or Destroy
+    displayName: Terraform Plan
     inputs:
       awsCredentials: $(AWS_SERVICE_CONNECTION)
       regionName: $(AWS_REGION)
@@ -82,69 +30,34 @@ jobs:
       inlineScript: |
         set -euo pipefail
         cd "$(TF_DIR)"
-
-        if [ "${{ parameters.destroy }}" = "True" ]; then
-          echo "Destroy flag enabled."
-
-          # Remove Kubernetes namespace from state if it exists (legacy resource)
-          # This prevents connection errors during destroy
-          if terraform state list 2>/dev/null | grep -q "kubernetes_namespace_v1.ingress_nginx"; then
-            echo "Removing legacy Kubernetes namespace from state..."
-            terraform state rm kubernetes_namespace_v1.ingress_nginx 2>/dev/null || true
-          fi
-
-          # Read VPC ID from Terraform state if it exists
-          if terraform output -raw vpc_id >/dev/null 2>&1; then
-            VPC_ID="$(terraform output -raw vpc_id)"
-            echo "Target VPC ID: $VPC_ID"
-
-            # Delete Classic ELBs
-            echo "Checking for Classic ELBs..."
-            ELB_NAMES=$(aws elb describe-load-balancers \
-              --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" \
-              --output text 2>/dev/null || echo "")
-
-            if [ -n "$ELB_NAMES" ]; then
-              for elb in $ELB_NAMES; do
-                echo "Deleting Classic ELB: $elb"
-                aws elb delete-load-balancer --load-balancer-name "$elb" || true
-              done
-            else
-              echo "No Classic ELBs found."
-            fi
-
-            # Delete ALB / NLB
-            echo "Checking for ALB/NLB..."
-            ELB_ARNS=$(aws elbv2 describe-load-balancers \
-              --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" \
-              --output text 2>/dev/null || echo "")
-
-            if [ -n "$ELB_ARNS" ]; then
-              for arn in $ELB_ARNS; do
-                echo "Deleting ELBv2: $arn"
-                aws elbv2 delete-load-balancer --load-balancer-arn "$arn" || true
-              done
-
-              echo "Waiting for ELBv2 deletion..."
-              sleep 30
-            else
-              echo "No ELBv2 found."
-            fi
-          else
-            echo "Terraform state not found. Skipping AWS pre-destroy cleanup."
-          fi
-
-          echo "Running Terraform Destroy..."
-          # Use -refresh=false to skip state refresh and avoid Kubernetes connection errors
-          terraform destroy -auto-approve -refresh=false -var-file="$(TF_VAR_FILE)" || \
-          terraform destroy -auto-approve -var-file="$(TF_VAR_FILE)"
-          exit 0
+        if [ ${{ parameters.destroy }} = true ]; then
+          terraform plan -destroy -var-file=$(TF_VAR_FILE) -out=tfplan
+        else
+          terraform plan -var-file=$(TF_VAR_FILE) -out=tfplan
         fi
 
-        echo "Running Terraform Plan (with refresh=false to avoid Kubernetes connection)..."
-        terraform plan -refresh=false -var-file="$(TF_VAR_FILE)" -out=tfplan || \
-        terraform plan -var-file="$(TF_VAR_FILE)" -out=tfplan
+  # Terraform Apply or Destroy
+  - task: AWSShellScript@1
+    displayName: 'Terraform Apply/Destroy'
+    inputs:
+      awsCredentials: $(AWS_SERVICE_CONNECTION)
+      regionName: $(AWS_REGION)
+      scriptType: inline
+      inlineScript: |
+        set -euo pipefail
+        cd "$(TF_DIR)"
         
-        echo "Running Terraform Apply..."
-        terraform apply -auto-approve -refresh=false tfplan || \
-        terraform apply -auto-approve tfplan
+        # Prompt for confirmation
+        echo "You are about to $([[ ${{ parameters.destroy }} == true ]] && echo 'DESTROY' || echo 'APPLY') the infrastructure."
+        read -p "Type 'yes' to continue: " CONFIRM
+        if [ "$CONFIRM" != "yes" ]; then
+          echo "Aborting..."
+          exit 1
+        fi
+
+        # Run Terraform
+        if [ ${{ parameters.destroy }} = true ]; then
+          terraform destroy -var-file=$(TF_VAR_FILE) -auto-approve
+        else
+          terraform apply -var-file=$(TF_VAR_FILE) -auto-approve
+        fi
