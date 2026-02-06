@@ -1,6 +1,7 @@
 environment     = "nonprod"
 project_name    = "eks-platform-nonprod"
 vpc_cidr        = "10.0.0.0/16"
-cluster_version = "1.30"
+cluster_version = "1.35"
 instance_type   = "t3.medium"
 principal_arn   = "arn:aws:iam::344809605543:root"
+enable_nlb      = false

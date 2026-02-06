@@ -45,81 +45,34 @@ jobs:
         set -euo pipefail
         cd "$(TF_DIR)"
         terraform init
-
-
-
-  - task: AWSShellScript@1
-  displayName: 'Terraform Full Destroy'
-  inputs:
-    awsCredentials: $(AWS_SERVICE_CONNECTION)
-    regionName: $(AWS_REGION)
-    scriptType: inline
-    inlineScript: |
-      set -euo pipefail
-
-      echo "Starting full destroy process..."
-
-      ###############################
-      # 1️⃣ Destroy Addons (Helm/K8s)
-      ###############################
-      echo "Destroying Kubernetes Addons first..."
-
-      # Check if cluster exists
-      if terraform -chdir="$(TF_DIR)" output -raw cluster_name >/dev/null 2>&1; then
-        CLUSTER_NAME=$(terraform -chdir="$(TF_DIR)" output -raw cluster_name)
-        echo "Configuring kubeconfig for cluster: $CLUSTER_NAME"
-        aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$(AWS_REGION)"
         
-        # Delete Helm releases safely
-        for release in ingress-nginx vault argocd sonarqube; do
-          if helm status "$release" -n "$release" >/dev/null 2>&1; then
-            echo "Uninstalling Helm release: $release"
-            helm uninstall "$release" -n "$release"
-          else
-            echo "Helm release $release not found, skipping."
-          fi
-        done
-      else
-        echo "No EKS cluster found. Skipping Addons destroy."
-      fi
+        # Clean up any legacy Kubernetes resources from state if they exist
+        # This prevents connection errors during plan/apply/destroy
+        echo "Checking for legacy Kubernetes resources in state..."
+        
+        # List all resources in state
+        STATE_LIST=$(terraform state list 2>/dev/null || echo "")
+        
+        # Remove any Kubernetes resources that might be in state
+        if [ -n "$STATE_LIST" ]; then
+          echo "$STATE_LIST" | grep -E "^kubernetes_" | while read -r resource; do
+            if [ -n "$resource" ]; then
+              echo "Removing ${resource} from state (no longer managed by Terraform)..."
+              terraform state rm "${resource}" 2>/dev/null || echo "Warning: Could not remove ${resource} from state"
+            fi
+          done
+          
+          # Also check for helm resources
+          echo "$STATE_LIST" | grep -E "^helm_" | while read -r resource; do
+            if [ -n "$resource" ]; then
+              echo "Removing ${resource} from state (no longer managed by Terraform)..."
+              terraform state rm "${resource}" 2>/dev/null || echo "Warning: Could not remove ${resource} from state"
+            fi
+          done
+        else
+          echo "No state file found or state is empty."
+        fi
 
-      ###############################
-      # 2️⃣ Destroy Infra (Terraform)
-      ###############################
-      echo "Destroying Terraform Infrastructure..."
-
-      cd "$(TF_DIR)"
-
-      # Pre-cleanup: Load Balancers in VPC
-      if terraform output -raw vpc_id >/dev/null 2>&1; then
-        VPC_ID=$(terraform output -raw vpc_id)
-        echo "Cleaning up Classic ELBs..."
-        ELB_NAMES=$(aws elb describe-load-balancers \
-          --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" \
-          --output text)
-        for elb in $ELB_NAMES; do
-          echo "Deleting Classic ELB: $elb"
-          aws elb delete-load-balancer --load-balancer-name "$elb"
-        done
-
-        echo "Cleaning up ALB/NLB..."
-        ELB_ARNS=$(aws elbv2 describe-load-balancers \
-          --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" \
-          --output text)
-        for arn in $ELB_ARNS; do
-          echo "Deleting ALB/NLB: $arn"
-          aws elbv2 delete-load-balancer --load-balancer-arn "$arn"
-        done
-        echo "Waiting 30 seconds for load balancers cleanup..."
-        sleep 30
-      fi
-
-      echo "Running terraform destroy..."
-      terraform destroy -auto-approve -var-file="$(TF_VAR_FILE)"
-
-      echo "Full destroy completed successfully ✅"
-      exit 0  
- 
   - task: AWSShellScript@1
     displayName: Terraform Apply or Destroy
     inputs:
@@ -133,50 +86,45 @@ jobs:
         if [ "${{ parameters.destroy }}" = "True" ]; then
           echo "Destroy flag enabled."
 
-          # -------------------------------------------------
-          # Configure kubeconfig if EKS cluster still exists
-          # -------------------------------------------------
-          if terraform output -raw cluster_name >/dev/null 2>&1; then
-            CLUSTER_NAME="$(terraform output -raw cluster_name)"
-            echo "Configuring kubeconfig for cluster: $CLUSTER_NAME"
-            aws eks update-kubeconfig \
-              --name "$CLUSTER_NAME" \
-              --region "$(AWS_REGION)"
-          else
-            echo "No EKS cluster found in state. Skipping kubeconfig setup."
+          # Remove Kubernetes namespace from state if it exists (legacy resource)
+          # This prevents connection errors during destroy
+          if terraform state list 2>/dev/null | grep -q "kubernetes_namespace_v1.ingress_nginx"; then
+            echo "Removing legacy Kubernetes namespace from state..."
+            terraform state rm kubernetes_namespace_v1.ingress_nginx 2>/dev/null || true
           fi
 
-          # -------------------------------------------------
-          # Pre-destroy cleanup: Load Balancers
-          # -------------------------------------------------
+          # Read VPC ID from Terraform state if it exists
           if terraform output -raw vpc_id >/dev/null 2>&1; then
             VPC_ID="$(terraform output -raw vpc_id)"
             echo "Target VPC ID: $VPC_ID"
 
+            # Delete Classic ELBs
             echo "Checking for Classic ELBs..."
             ELB_NAMES=$(aws elb describe-load-balancers \
               --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" \
-              --output text)
+              --output text 2>/dev/null || echo "")
 
             if [ -n "$ELB_NAMES" ]; then
               for elb in $ELB_NAMES; do
                 echo "Deleting Classic ELB: $elb"
-                aws elb delete-load-balancer --load-balancer-name "$elb"
+                aws elb delete-load-balancer --load-balancer-name "$elb" || true
               done
             else
               echo "No Classic ELBs found."
             fi
 
+            # Delete ALB / NLB
             echo "Checking for ALB/NLB..."
             ELB_ARNS=$(aws elbv2 describe-load-balancers \
               --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" \
-              --output text)
+              --output text 2>/dev/null || echo "")
 
             if [ -n "$ELB_ARNS" ]; then
               for arn in $ELB_ARNS; do
                 echo "Deleting ELBv2: $arn"
-                aws elbv2 delete-load-balancer --load-balancer-arn "$arn"
+                aws elbv2 delete-load-balancer --load-balancer-arn "$arn" || true
               done
+
               echo "Waiting for ELBv2 deletion..."
               sleep 30
             else
@@ -187,9 +135,16 @@ jobs:
           fi
 
           echo "Running Terraform Destroy..."
+          # Use -refresh=false to skip state refresh and avoid Kubernetes connection errors
+          terraform destroy -auto-approve -refresh=false -var-file="$(TF_VAR_FILE)" || \
           terraform destroy -auto-approve -var-file="$(TF_VAR_FILE)"
           exit 0
         fi
 
+        echo "Running Terraform Plan (with refresh=false to avoid Kubernetes connection)..."
+        terraform plan -refresh=false -var-file="$(TF_VAR_FILE)" -out=tfplan || \
+        terraform plan -var-file="$(TF_VAR_FILE)" -out=tfplan
+        
         echo "Running Terraform Apply..."
-        terraform apply -auto-approve -var-file="$(TF_VAR_FILE)"
+        terraform apply -auto-approve -refresh=false tfplan || \
+        terraform apply -auto-approve tfplan

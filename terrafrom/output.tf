@@ -30,12 +30,12 @@ output "cognito_client_id" {
 
 output "nlb_dns_name" {
   description = "DNS name of the Network Load Balancer"
-  value       = aws_lb.nlb.dns_name
+  value       = var.enable_nlb ? aws_lb.nlb[0].dns_name : "NLB disabled"
 }
 
 output "nlb_arn" {
   description = "ARN of the Network Load Balancer"
-  value       = aws_lb.nlb.arn
+  value       = var.enable_nlb ? aws_lb.nlb[0].arn : "NLB disabled"
 }
 
 output "eks_cluster_id" {

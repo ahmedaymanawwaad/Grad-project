@@ -40,6 +40,12 @@ variable "tags" {
   default     = {}
 }
 
+variable "enable_nlb" {
+  description = "Whether to create the Network Load Balancer (set to false if AWS account does not support LB creation)"
+  type        = bool
+  default     = false
+}
+
 variable "irsa_roles" {
   description = "Map of IRSA roles to create"
   type = map(object({
