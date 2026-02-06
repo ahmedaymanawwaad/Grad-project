@@ -46,6 +46,80 @@ jobs:
         cd "$(TF_DIR)"
         terraform init
 
+
+
+  - task: AWSShellScript@1
+  displayName: 'Terraform Full Destroy'
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+
+      echo "Starting full destroy process..."
+
+      ###############################
+      # 1️⃣ Destroy Addons (Helm/K8s)
+      ###############################
+      echo "Destroying Kubernetes Addons first..."
+
+      # Check if cluster exists
+      if terraform -chdir="$(TF_DIR)" output -raw cluster_name >/dev/null 2>&1; then
+        CLUSTER_NAME=$(terraform -chdir="$(TF_DIR)" output -raw cluster_name)
+        echo "Configuring kubeconfig for cluster: $CLUSTER_NAME"
+        aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$(AWS_REGION)"
+        
+        # Delete Helm releases safely
+        for release in ingress-nginx vault argocd sonarqube; do
+          if helm status "$release" -n "$release" >/dev/null 2>&1; then
+            echo "Uninstalling Helm release: $release"
+            helm uninstall "$release" -n "$release"
+          else
+            echo "Helm release $release not found, skipping."
+          fi
+        done
+      else
+        echo "No EKS cluster found. Skipping Addons destroy."
+      fi
+
+      ###############################
+      # 2️⃣ Destroy Infra (Terraform)
+      ###############################
+      echo "Destroying Terraform Infrastructure..."
+
+      cd "$(TF_DIR)"
+
+      # Pre-cleanup: Load Balancers in VPC
+      if terraform output -raw vpc_id >/dev/null 2>&1; then
+        VPC_ID=$(terraform output -raw vpc_id)
+        echo "Cleaning up Classic ELBs..."
+        ELB_NAMES=$(aws elb describe-load-balancers \
+          --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" \
+          --output text)
+        for elb in $ELB_NAMES; do
+          echo "Deleting Classic ELB: $elb"
+          aws elb delete-load-balancer --load-balancer-name "$elb"
+        done
+
+        echo "Cleaning up ALB/NLB..."
+        ELB_ARNS=$(aws elbv2 describe-load-balancers \
+          --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" \
+          --output text)
+        for arn in $ELB_ARNS; do
+          echo "Deleting ALB/NLB: $arn"
+          aws elbv2 delete-load-balancer --load-balancer-arn "$arn"
+        done
+        echo "Waiting 30 seconds for load balancers cleanup..."
+        sleep 30
+      fi
+
+      echo "Running terraform destroy..."
+      terraform destroy -auto-approve -var-file="$(TF_VAR_FILE)"
+
+      echo "Full destroy completed successfully ✅"
+      exit 0  
+ 
   - task: AWSShellScript@1
     displayName: Terraform Apply or Destroy
     inputs:
