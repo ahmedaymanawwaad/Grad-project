@@ -59,12 +59,26 @@ jobs:
         if [ "${{ parameters.destroy }}" = "True" ]; then
           echo "Destroy flag enabled."
 
-          # Read VPC ID from Terraform state if it exists
+          # -------------------------------------------------
+          # Configure kubeconfig if EKS cluster still exists
+          # -------------------------------------------------
+          if terraform output -raw cluster_name >/dev/null 2>&1; then
+            CLUSTER_NAME="$(terraform output -raw cluster_name)"
+            echo "Configuring kubeconfig for cluster: $CLUSTER_NAME"
+            aws eks update-kubeconfig \
+              --name "$CLUSTER_NAME" \
+              --region "$(AWS_REGION)"
+          else
+            echo "No EKS cluster found in state. Skipping kubeconfig setup."
+          fi
+
+          # -------------------------------------------------
+          # Pre-destroy cleanup: Load Balancers
+          # -------------------------------------------------
           if terraform output -raw vpc_id >/dev/null 2>&1; then
             VPC_ID="$(terraform output -raw vpc_id)"
             echo "Target VPC ID: $VPC_ID"
 
-            # Delete Classic ELBs
             echo "Checking for Classic ELBs..."
             ELB_NAMES=$(aws elb describe-load-balancers \
               --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" \
@@ -79,7 +93,6 @@ jobs:
               echo "No Classic ELBs found."
             fi
 
-            # Delete ALB / NLB
             echo "Checking for ALB/NLB..."
             ELB_ARNS=$(aws elbv2 describe-load-balancers \
               --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" \
@@ -90,7 +103,6 @@ jobs:
                 echo "Deleting ELBv2: $arn"
                 aws elbv2 delete-load-balancer --load-balancer-arn "$arn"
               done
-
               echo "Waiting for ELBv2 deletion..."
               sleep 30
             else
