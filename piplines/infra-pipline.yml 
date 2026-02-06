@@ -1,6 +1,7 @@
 - job: Infrastructure
   displayName: 'Infrastructure Provisioning (VPC, EKS, Cognito, APIGW)'
   timeoutInMinutes: 120
+
   steps:
   - checkout: self
 
@@ -9,6 +10,7 @@
     inputs:
       terraformVersion: latest
 
+  # Terraform Init
   - task: AWSShellScript@1
     displayName: Terraform Init
     inputs:
@@ -18,9 +20,9 @@
       inlineScript: |
         set -euo pipefail
         cd "$(TF_DIR)"
-        terraform init -input=false -var-file=$(TF_VAR_FILE)
+        terraform init -input=false
 
-  # Terraform Plan (optional but recommended)
+  # Terraform Plan
   - task: AWSShellScript@1
     displayName: Terraform Plan
     inputs:
@@ -30,15 +32,18 @@
       inlineScript: |
         set -euo pipefail
         cd "$(TF_DIR)"
-        if [ ${{ parameters.destroy }} = true ]; then
-          terraform plan -destroy -var-file=$(TF_VAR_FILE) -out=tfplan
+
+        if [ "${{ parameters.destroy }}" = "true" ]; then
+          echo "Running terraform plan (DESTROY)"
+          terraform plan -destroy -var-file="$(TF_VAR_FILE)" -out=tfplan
         else
-          terraform plan -var-file=$(TF_VAR_FILE) -out=tfplan
+          echo "Running terraform plan (APPLY)"
+          terraform plan -var-file="$(TF_VAR_FILE)" -out=tfplan
         fi
 
-  # Terraform Apply or Destroy
+  # Terraform Apply / Destroy
   - task: AWSShellScript@1
-    displayName: 'Terraform Apply/Destroy'
+    displayName: Terraform Apply or Destroy
     inputs:
       awsCredentials: $(AWS_SERVICE_CONNECTION)
       regionName: $(AWS_REGION)
@@ -46,18 +51,11 @@
       inlineScript: |
         set -euo pipefail
         cd "$(TF_DIR)"
-        
-        # Prompt for confirmation
-        echo "You are about to $([[ ${{ parameters.destroy }} == true ]] && echo 'DESTROY' || echo 'APPLY') the infrastructure."
-        read -p "Type 'yes' to continue: " CONFIRM
-        if [ "$CONFIRM" != "yes" ]; then
-          echo "Aborting..."
-          exit 1
-        fi
 
-        # Run Terraform
-        if [ ${{ parameters.destroy }} = true ]; then
-          terraform destroy -var-file=$(TF_VAR_FILE) -auto-approve
+        if [ "${{ parameters.destroy }}" = "true" ]; then
+          echo "Destroying infrastructure..."
+          terraform apply -auto-approve tfplan
         else
-          terraform apply -var-file=$(TF_VAR_FILE) -auto-approve
+          echo "Applying infrastructure..."
+          terraform apply -auto-approve tfplan
         fi
