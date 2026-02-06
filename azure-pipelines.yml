@@ -59,7 +59,7 @@ jobs:
         if [ "${{ parameters.destroy }}" = "True" ]; then
           echo "Destroy flag enabled."
 
-          # Attempt to read VPC ID from Terraform state (if it exists)
+          # Read VPC ID from Terraform state if it exists
           if terraform output -raw vpc_id >/dev/null 2>&1; then
             VPC_ID="$(terraform output -raw vpc_id)"
             echo "Target VPC ID: $VPC_ID"
