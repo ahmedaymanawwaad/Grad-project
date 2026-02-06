@@ -1,8 +1,31 @@
+# Terraform files
 terraform.tfvars
-.terraform/
-terraform.tfstate*
-/ahmed/  
-.terraform/
 *.tfstate
+*.tfstate.*
 *.tfstate.backup
+.terraform/
 .terraform.lock.hcl
+*.tfvars.backup
+
+# AWS CLI installation files
+terrafrom/aws/
+terrafrom/awscliv2.zip
+terrafrom/awscliv2/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Local directories
+/ahmed/
