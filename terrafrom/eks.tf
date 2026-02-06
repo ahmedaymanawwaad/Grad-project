@@ -133,12 +133,5 @@ resource "aws_eks_access_policy_association" "root" {
   }
 }
 
-resource "kubernetes_namespace_v1" "ingress_nginx" {
-  metadata {
-    name = "ingress-nginx"
-  }
-
-  depends_on = [
-    aws_eks_cluster.main
-  ]
-}
+# Note: The ingress-nginx namespace is created by the Helm chart installation
+# in the pipeline using the --create-namespace flag, so we don't create it here.
