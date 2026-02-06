@@ -34,14 +34,6 @@ variable "environment" {
   default     = "nonprod"
 }
 
-# Added for API Gateway / Two-Pass deployment
-variable "nlb_dns_name" {
-  description = "The DNS name of the Network Load Balancer created by Ingress Controller"
-  type        = string
-  default     = "http://example.com"
-}
-
-# Added for IRSA
 variable "tags" {
   description = "A map of tags to add to all resources"
   type        = map(string)
@@ -57,4 +49,3 @@ variable "irsa_roles" {
   }))
   default = {}
 }
-

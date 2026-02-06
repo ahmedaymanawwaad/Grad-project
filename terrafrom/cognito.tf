@@ -1,5 +1,6 @@
+# Cognito User Pool (Minimal Configuration)
 resource "aws_cognito_user_pool" "main" {
-  name = "${var.project_name}-user-pool-${var.environment}"
+  name = "${var.project_name}-pool-${var.environment}"
 
   password_policy {
     minimum_length    = 8
@@ -18,6 +19,7 @@ resource "aws_cognito_user_pool" "main" {
   }
 }
 
+# Cognito User Pool Client (Minimal Configuration)
 resource "aws_cognito_user_pool_client" "client" {
   name         = "${var.project_name}-client"
   user_pool_id = aws_cognito_user_pool.main.id
@@ -27,12 +29,6 @@ resource "aws_cognito_user_pool_client" "client" {
   explicit_auth_flows = [
     "ALLOW_USER_PASSWORD_AUTH",
     "ALLOW_REFRESH_TOKEN_AUTH",
-    "ALLOW_USER_SRP_AUTH",
-    "ALLOW_ADMIN_USER_PASSWORD_AUTH"
+    "ALLOW_USER_SRP_AUTH"
   ]
-}
-
-resource "aws_cognito_user_pool_domain" "main" {
-  domain       = "${var.project_name}-${var.environment}-auth"
-  user_pool_id = aws_cognito_user_pool.main.id
 }

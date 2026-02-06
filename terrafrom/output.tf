@@ -28,6 +28,16 @@ output "cognito_client_id" {
   value       = aws_cognito_user_pool_client.client.id
 }
 
+output "nlb_dns_name" {
+  description = "DNS name of the Network Load Balancer"
+  value       = aws_lb.nlb.dns_name
+}
+
+output "nlb_arn" {
+  description = "ARN of the Network Load Balancer"
+  value       = aws_lb.nlb.arn
+}
+
 output "eks_cluster_id" {
   description = "EKS Cluster ID"
   value       = aws_eks_cluster.main.id
@@ -42,4 +52,3 @@ output "eks_oidc_provider_arn" {
   description = "ARN of the EKS OIDC Provider"
   value       = aws_iam_openid_connect_provider.eks.arn
 }
-

@@ -1,7 +1,7 @@
+# HTTP API Gateway v2 (Minimal Configuration)
 resource "aws_apigatewayv2_api" "main" {
-  name          = "${var.project_name}-api-v2-${var.environment}"
+  name          = "${var.project_name}-api-${var.environment}"
   protocol_type = "HTTP"
-  description   = "HTTP API Gateway with JWT Auth"
 
   tags = {
     Project     = var.project_name
@@ -9,12 +9,14 @@ resource "aws_apigatewayv2_api" "main" {
   }
 }
 
+# Default Stage
 resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.main.id
   name        = "$default"
   auto_deploy = true
 }
 
+# VPC Link to connect API Gateway to NLB
 resource "aws_apigatewayv2_vpc_link" "main" {
   name               = "${var.project_name}-vpc-link"
   security_group_ids = [aws_eks_cluster.main.vpc_config[0].cluster_security_group_id]
@@ -25,6 +27,7 @@ resource "aws_apigatewayv2_vpc_link" "main" {
   }
 }
 
+# JWT Authorizer using Cognito
 resource "aws_apigatewayv2_authorizer" "jwt" {
   api_id           = aws_apigatewayv2_api.main.id
   authorizer_type  = "JWT"
@@ -37,23 +40,23 @@ resource "aws_apigatewayv2_authorizer" "jwt" {
   }
 }
 
-resource "aws_apigatewayv2_integration" "nlb_proxy" {
+# Integration with NLB via VPC Link
+resource "aws_apigatewayv2_integration" "nlb" {
   api_id           = aws_apigatewayv2_api.main.id
   integration_type = "HTTP_PROXY"
 
-  # This variable is updated by the pipeline (sed) after Helm creates the LB
-  integration_uri  = var.nlb_dns_name
-
+  integration_uri    = "http://${aws_lb.nlb.dns_name}"
   integration_method = "ANY"
-  connection_type    = "INTERNET"
+  connection_type    = "VPC_LINK"
+  connection_id      = aws_apigatewayv2_vpc_link.main.id
 }
 
+# Route with JWT Authorization
 resource "aws_apigatewayv2_route" "default" {
   api_id    = aws_apigatewayv2_api.main.id
   route_key = "ANY /{proxy+}"
-  target    = "integrations/${aws_apigatewayv2_integration.nlb_proxy.id}"
+  target    = "integrations/${aws_apigatewayv2_integration.nlb.id}"
 
   authorization_type = "JWT"
   authorizer_id      = aws_apigatewayv2_authorizer.jwt.id
 }
-
