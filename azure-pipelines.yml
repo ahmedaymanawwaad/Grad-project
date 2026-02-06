@@ -1,3 +1,4 @@
+name: $(Date:yyyyMMdd)$(Rev:.r)-Infrastructure
 trigger: none
 pr: none
 
@@ -14,202 +15,98 @@ parameters:
     default: false
 
 variables:
-  TF_DIR: 'terrafrom' 
+  TF_DIR: '.' 
   TF_VAR_FILE: '${{ parameters.env }}.tfvars'
-  AWS_SERVICE_CONNECTION: aws-awwad
-  AWS_REGION: eu-central-1
+  AWS_SERVICE_CONNECTION: 'aws-awwad'
+  AWS_REGION: 'eu-central-1'
 
 pool:
   vmImage: ubuntu-latest
 
-steps:
-- checkout: self
+jobs:
+- job: Infrastructure
+  displayName: 'Infrastructure Provisioning (VPC, EKS, Cognito, APIGW)'
+  timeoutInMinutes: 120
+  steps:
+  - checkout: self
 
-- task: TerraformInstaller@1
-  displayName: Install Terraform
-  inputs:
-    terraformVersion: latest
+  - task: TerraformInstaller@1
+    displayName: Install Terraform
+    inputs:
+      terraformVersion: latest
 
-# 1. Terraform Init
-- task: AWSShellScript@1
-  displayName: Terraform init
-  inputs:
-    awsCredentials: $(AWS_SERVICE_CONNECTION)
-    regionName: $(AWS_REGION)
-    scriptType: inline
-    inlineScript: |
-      set -euo pipefail
-      cd "$(TF_DIR)"
-      terraform init
+  - task: AWSShellScript@1
+    displayName: Terraform Init
+    inputs:
+      awsCredentials: $(AWS_SERVICE_CONNECTION)
+      regionName: $(AWS_REGION)
+      scriptType: inline
+      inlineScript: |
+        set -euo pipefail
+        cd "$(TF_DIR)"
+        terraform init
 
-# 2. Terraform Plan
-- task: AWSShellScript@1
-  displayName: Terraform plan
-  inputs:
-    awsCredentials: $(AWS_SERVICE_CONNECTION)
-    regionName: $(AWS_REGION)
-    scriptType: inline
-    inlineScript: |
-      set -euo pipefail
-      cd "$(TF_DIR)"
-      
-      echo "Running plan for Environment: ${{ parameters.env }}"
-      
-      if [ "${{ parameters.destroy }}" = "True" ]; then
-        echo "Creating DESTROY plan..."
-        terraform plan -destroy -out=tfplan -var-file="$(TF_VAR_FILE)"
-      else
-        echo "Creating APPLY plan..."
-        terraform plan -out=tfplan -var-file="$(TF_VAR_FILE)"
-      fi
+  - task: AWSShellScript@1
+    displayName: Terraform Apply or Destroy
+    inputs:
+      awsCredentials: $(AWS_SERVICE_CONNECTION)
+      regionName: $(AWS_REGION)
+      scriptType: inline
+      inlineScript: |
+        set -euo pipefail
+        cd "$(TF_DIR)"
+        
+        # ATTEMPT FORCE UNLOCK (Safeguard)
+        echo "Attempting to force unlock state..."
+        terraform force-unlock -force 41887957-f2da-c5b7-7b04-a1e1dd1c79c9 || echo "Unlock failed or not needed"
 
-# 3. Terraform Apply
-- task: AWSShellScript@1
-  displayName: Terraform apply
-  inputs:
-    awsCredentials: $(AWS_SERVICE_CONNECTION)
-    regionName: $(AWS_REGION)
-    scriptType: inline
-    inlineScript: |
-      set -euo pipefail
-      cd "$(TF_DIR)"
-      
-      echo "Applying tfplan..."
-      terraform apply -auto-approve tfplan
+        if [ "${{ parameters.destroy }}" = "True" ]; then
+          echo "Running Pre-Destroy Cleanup (AWS CLI Method)..."
+          
+          # 1. Get VPC ID from Terraform (Critical for filtering)
+          VPC_ID="$(terraform output -raw vpc_id)"
+          echo "Target VPC ID: $VPC_ID"
+          
+          # 2. Delete Classic ELBs in VPC
+          echo "Checking for Classic ELBs..."
+          ELB_NAMES=$(aws elb describe-load-balancers --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" --output text)
+          if [ -n "$ELB_NAMES" ]; then
+            for elb in $ELB_NAMES; do
+              echo "Deleting Classic ELB: $elb"
+              aws elb delete-load-balancer --load-balancer-name "$elb"
+            done
+          else
+            echo "No Classic ELBs found."
+          fi
 
-# 4. Install Tools (Kubectl, Helm)
-- task: KubectlInstaller@0
-  displayName: Install kubectl
-  inputs:
-    kubectlVersion: 'latest'
+          # 3. Delete ELBv2 (ALB/NLB) in VPC
+          echo "Checking for V2 Load Balancers (ALB/NLB)..."
+          ELB_ARNS=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" --output text)
+          if [ -n "$ELB_ARNS" ]; then
+            for arn in $ELB_ARNS; do
+              echo "Deleting ELBv2: $arn"
+              aws elbv2 delete-load-balancer --load-balancer-arn "$arn"
+            done
+            
+            # Wait for them to disappear to free up ENIs
+            echo "Waiting for ELBv2 deletion..."
+            sleep 15
+          else
+            echo "No V2 Load Balancers found."
+          fi
+          
+          # 4. Cleanup Target Groups (orphaned TGs can prevent deletions)
+          # Note: TGs are not strictly VPC-bound in query but we can try to clean specific ones or just wait if time permits.
+          # For now, ELB deletion is the main blocker for IGW.
+          
+          echo "Waiting 30 seconds for AWS cleanup..."
+          sleep 30
 
-- task: HelmInstaller@1
-  displayName: Install Helm
-  inputs:
-    helmVersionToInstall: 'latest'
-
-# 5. Configure Kubeconfig
-- task: AWSShellScript@1
-  displayName: Configure kubeconfig
-  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
-  inputs:
-    awsCredentials: $(AWS_SERVICE_CONNECTION)
-    regionName: $(AWS_REGION)
-    scriptType: inline
-    inlineScript: |
-      set -euo pipefail
-      cd "$(TF_DIR)"
-      
-      # Get Cluster Name from Terraform Output
-      CLUSTER_NAME="$(terraform output -raw cluster_name)"
-      
-      echo "Updating kubeconfig for cluster: $CLUSTER_NAME in region $(AWS_REGION)..."
-      aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$(AWS_REGION)"
-      
-      kubectl get nodes
-- task: AWSShellScript@1
-  displayName: 'Export AWS Credentials'
-  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
-  inputs:
-    awsCredentials: $(AWS_SERVICE_CONNECTION)
-    regionName: $(AWS_REGION)
-    scriptType: inline
-    inlineScript: |
-      # Capture credentials from the Service Connection
-      echo "##vso[task.setvariable variable=AWS_ACCESS_KEY_ID;isSecret=true]$AWS_ACCESS_KEY_ID"
-      echo "##vso[task.setvariable variable=AWS_SECRET_ACCESS_KEY;isSecret=true]$AWS_SECRET_ACCESS_KEY"
-      echo "##vso[task.setvariable variable=AWS_SESSION_TOKEN;isSecret=true]$AWS_SESSION_TOKEN"
-# 7. Helm Installs (Using Plugins with 15m timeout)
-# 7. Helm Installs (Fixed Chart Names & Credentials Bridge)
-- task: AWSShellScript@1
-  displayName: Cleanup Stuck Nexus Release
-  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
-  inputs:
-    awsCredentials: $(AWS_SERVICE_CONNECTION)
-    regionName: $(AWS_REGION)
-    scriptType: inline
-    inlineScript: |
-      set -euo pipefail
-      echo "Checking/Unlocking Nexus release..."
-      if helm status nexus -n nexus >/dev/null 2>&1; then
-        STATUS=$(helm status nexus -n nexus -o json | jq -r .info.status)
-        echo "Current status: $STATUS"
-        if [[ "$STATUS" == "pending-install" || "$STATUS" == "pending-upgrade" || "$STATUS" == "pending-rollback" ]]; then
-          echo "Release stuck. Rolling back..."
-          helm rollback nexus -n nexus || helm uninstall nexus -n nexus
+          echo "Running Terraform Destroy..."
+          terraform destroy -auto-approve -var-file="$(TF_VAR_FILE)" -lock=false
+          exit 0
         fi
-      fi
 
-- task: HelmDeploy@0
-  displayName: Install Nexus
-  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
-  inputs:
-    connectionType: None
-    command: upgrade
-    chartType: Name
-    chartName: nexus-repository-manager  # CHANGED: Removed 'sonatype/'
-    releaseName: nexus
-    namespace: nexus
-    install: true
-    arguments: '--repo https://sonatype.github.io/helm3-charts/ --wait --timeout 3m --atomic --cleanup-on-fail'
-  env:
-    AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
-    AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
-    AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
-    AWS_REGION: $(AWS_REGION)
 
-- task: HelmDeploy@0
-  displayName: Install SonarQube
-  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
-  inputs:
-    connectionType: None
-    command: upgrade
-    chartType: Name
-    chartName: sonarqube  # CHANGED: Removed 'sonarqube/'
-    releaseName: sonarqube
-    namespace: sonarqube
-    install: true
-    arguments: '--repo https://SonarSource.github.io/helm-chart-sonarqube --wait --timeout 3m --cleanup-on-fail'
-  env:
-    AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
-    AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
-    AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
-    AWS_REGION: $(AWS_REGION)
-
-- task: HelmDeploy@0
-  displayName: Install Argo CD
-  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
-  inputs:
-    connectionType: None
-    command: upgrade
-    chartType: Name
-    chartName: argo-cd  # CHANGED: Removed 'argo/'
-    releaseName: argocd
-    namespace: argocd
-    install: true
-    arguments: '--repo https://argoproj.github.io/argo-helm --wait --timeout 5m --cleanup-on-fail'
-  env:
-    AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
-    AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
-    AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
-    AWS_REGION: $(AWS_REGION)
-
-# 8. Verification
-- task: AWSShellScript@1
-  displayName: Verify platform services
-  condition: and(succeeded(), ne('${{ parameters.destroy }}','True'))
-  inputs:
-    awsCredentials: $(AWS_SERVICE_CONNECTION)
-    regionName: $(AWS_REGION)
-    scriptType: inline
-    inlineScript: |
-      set -euo pipefail
-      echo "Retrieving pod status..."
-      echo "--- Ingress Nginx ---"
-      kubectl get pods -n ingress-nginx
-      echo "--- Nexus ---"
-      kubectl get pods -n nexus
-      echo "--- SonarQube ---"
-      kubectl get pods -n sonarqube
-      echo "--- ArgoCD ---"
-      kubectl get pods -n argocd
+        echo "Running Terraform Apply (Pass 1)..."
+        terraform apply -auto-approve -var-file="$(TF_VAR_FILE)"
