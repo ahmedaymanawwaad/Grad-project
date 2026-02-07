@@ -17,9 +17,6 @@ resource "aws_apigatewayv2_stage" "default" {
 }
 
 # VPC Link to connect API Gateway to NLB (only when NLB is enabled)
-# IMPORTANT: VPC Link creates ENIs in the subnets. It MUST be destroyed
-# before subnets can be deleted. The implicit dependency via subnet_ids
-# ensures Terraform destroys the VPC Link first, but ENI cleanup can take time.
 resource "aws_apigatewayv2_vpc_link" "main" {
   count              = var.enable_nlb ? 1 : 0
   name               = "${var.project_name}-vpc-link"
@@ -31,9 +28,7 @@ resource "aws_apigatewayv2_vpc_link" "main" {
   }
 
   # VPC Link ENI cleanup can take time
-  timeouts {
-    delete = "20m"
-  }
+
 }
 
 # Dedicated Security Group for VPC Link
