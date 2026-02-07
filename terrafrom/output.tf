@@ -52,3 +52,18 @@ output "eks_oidc_provider_arn" {
   description = "ARN of the EKS OIDC Provider"
   value       = aws_iam_openid_connect_provider.eks.arn
 }
+
+output "public_subnet_ids" {
+  description = "IDs of the public subnets (2 AZs)"
+  value       = aws_subnet.public[*].id
+}
+
+output "private_subnet_ids" {
+  description = "IDs of the private subnets (2 AZs)"
+  value       = aws_subnet.private[*].id
+}
+
+output "availability_zones" {
+  description = "Availability zones used"
+  value       = [data.aws_availability_zones.available.names[0], data.aws_availability_zones.available.names[1]]
+}

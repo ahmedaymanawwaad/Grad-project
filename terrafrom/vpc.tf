@@ -17,6 +17,7 @@ resource "aws_vpc" "main" {
   }
 }
 
+# --- 2 Public Subnets across 2 AZs ---
 resource "aws_subnet" "public" {
   count             = 2
   vpc_id            = aws_vpc.main.id
@@ -26,9 +27,14 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name                     = "${var.project_name}-public-${count.index + 1}"
+    Name                     = "${var.project_name}-public-${data.aws_availability_zones.available.names[count.index]}"
     "kubernetes.io/role/elb" = "1"
     Project                  = var.project_name
+  }
+
+  # Give time for ENIs to be released before subnet is destroyed
+  timeouts {
+    delete = "20m"
   }
 }
 
@@ -39,9 +45,14 @@ resource "aws_subnet" "private" {
   availability_zone = data.aws_availability_zones.available.names[count.index]
 
   tags = {
-    Name                              = "${var.project_name}-private-${count.index + 1}"
+    Name                              = "${var.project_name}-private-${data.aws_availability_zones.available.names[count.index]}"
     "kubernetes.io/role/internal-elb" = "1"
     Project                           = var.project_name
+  }
+
+  # Give time for ENIs to be released before subnet is destroyed
+  timeouts {
+    delete = "20m"
   }
 }
 
@@ -112,4 +123,3 @@ resource "aws_route_table_association" "private" {
   subnet_id      = aws_subnet.private[count.index].id
   route_table_id = aws_route_table.private.id
 }
-
