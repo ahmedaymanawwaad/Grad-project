@@ -135,18 +135,38 @@ jobs:
           --wait --timeout 10m
 
   # ---------------- SonarQube ----------------
-  - task: AWSShellScript@1
-    displayName: Install SonarQube
-    inputs:
-      awsCredentials: $(AWS_SERVICE_CONNECTION)
-      regionName: $(AWS_REGION)
-      scriptType: inline
-      inlineScript: |
-        helm upgrade --install sonarqube bitnami/sonarqube \
-          --namespace sonarqube --create-namespace \
-          --set service.type=LoadBalancer \
-          --wait --timeout 15m
+- task: AWSShellScript@1
+  displayName: Install SonarQube
+  inputs:
+    awsCredentials: $(AWS_SERVICE_CONNECTION)
+    regionName: $(AWS_REGION)
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
 
+      # Add Bitnami repo if missing
+      if ! helm repo list | grep -q bitnami; then
+        helm repo add bitnami https://charts.bitnami.com/bitnami
+        helm repo update
+      fi
+
+      # Ensure sysctl init container is disabled (common EKS issue)
+      # Enable persistence with 20Gi storage
+      helm upgrade --install sonarqube bitnami/sonarqube \
+        -n sonarqube --create-namespace \
+        --set sysctl.enabled=false \
+        --set persistence.enabled=true \
+        --set persistence.size=20Gi \
+        --set service.type=LoadBalancer \
+        --timeout 30m \
+        --wait
+
+      # Wait until pod is ready
+      kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=sonarqube -n sonarqube --timeout=1800s
+
+      # Show external IP
+      echo "SonarQube service info:"
+      kubectl get svc -n sonarqube
   # ---------------- Nexus ----------------
   - task: AWSShellScript@1
     displayName: Install Nexus
