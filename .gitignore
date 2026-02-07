@@ -8,9 +8,9 @@ terraform.tfvars
 *.tfvars.backup
 
 # AWS CLI installation files
-terrafrom/aws/
-terrafrom/awscliv2.zip
-terrafrom/awscliv2/
+terraform/aws/
+terraform/awscliv2.zip
+terraform/awscliv2/
 
 # IDE and editor files
 .vscode/
