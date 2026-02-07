@@ -10,7 +10,7 @@ parameters:
 
   - name: cluster_name
     type: string
-    default: 'terraform'
+    default: 'eks-platform-nonprod-cluster'
 
 variables:
   TF_DIR: 'terraform'
