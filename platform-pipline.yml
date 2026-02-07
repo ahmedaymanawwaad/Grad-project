@@ -23,8 +23,8 @@ pool:
 
 jobs:
 - job: tools
-  displayName: Install cluster tools
-  timeoutInMinutes: 90
+  displayName: Install Cluster Tools
+  timeoutInMinutes: 120
   steps:
   - checkout: self
 
@@ -96,7 +96,7 @@ jobs:
 
   # ---------------- nginx ingress ----------------
   - task: AWSShellScript@1
-    displayName: Install nginx-ingress
+    displayName: Install Nginx Ingress
     inputs:
       awsCredentials: $(AWS_SERVICE_CONNECTION)
       regionName: $(AWS_REGION)
@@ -106,6 +106,7 @@ jobs:
           --namespace ingress-nginx --create-namespace \
           --set controller.service.type=LoadBalancer \
           --wait --timeout 10m
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=ingress-nginx -n ingress-nginx --timeout=600s
 
   # ---------------- ArgoCD ----------------
   - task: AWSShellScript@1
@@ -119,6 +120,7 @@ jobs:
           --namespace argocd --create-namespace \
           --set server.service.type=LoadBalancer \
           --wait --timeout 10m
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=600s
 
   # ---------------- Vault ----------------
   - task: AWSShellScript@1
@@ -133,40 +135,35 @@ jobs:
           --set server.dev.enabled=true \
           --set server.service.type=LoadBalancer \
           --wait --timeout 10m
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault -n vault --timeout=600s
 
   # ---------------- SonarQube ----------------
-- task: AWSShellScript@1
-  displayName: Install SonarQube
-  inputs:
-    awsCredentials: $(AWS_SERVICE_CONNECTION)
-    regionName: $(AWS_REGION)
-    scriptType: inline
-    inlineScript: |
-      set -euo pipefail
+  - task: AWSShellScript@1
+    displayName: Install SonarQube
+    inputs:
+      awsCredentials: $(AWS_SERVICE_CONNECTION)
+      regionName: $(AWS_REGION)
+      scriptType: inline
+      inlineScript: |
+        set -euo pipefail
 
-      # Add Bitnami repo if missing
-      if ! helm repo list | grep -q bitnami; then
-        helm repo add bitnami https://charts.bitnami.com/bitnami
-        helm repo update
-      fi
+        if ! helm repo list | grep -q bitnami; then
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo update
+        fi
 
-      # Ensure sysctl init container is disabled (common EKS issue)
-      # Enable persistence with 20Gi storage
-      helm upgrade --install sonarqube bitnami/sonarqube \
-        -n sonarqube --create-namespace \
-        --set sysctl.enabled=false \
-        --set persistence.enabled=true \
-        --set persistence.size=20Gi \
-        --set service.type=LoadBalancer \
-        --timeout 30m \
-        --wait
+        helm upgrade --install sonarqube bitnami/sonarqube \
+          -n sonarqube --create-namespace \
+          --set sysctl.enabled=false \
+          --set persistence.enabled=true \
+          --set persistence.size=20Gi \
+          --set service.type=LoadBalancer \
+          --timeout 30m \
+          --wait || true
 
-      # Wait until pod is ready
-      kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=sonarqube -n sonarqube --timeout=1800s
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=sonarqube -n sonarqube --timeout=1800s
+        kubectl get svc sonarqube -n sonarqube -o wide
 
-      # Show external IP
-      echo "SonarQube service info:"
-      kubectl get svc -n sonarqube
   # ---------------- Nexus ----------------
   - task: AWSShellScript@1
     displayName: Install Nexus
@@ -179,8 +176,9 @@ jobs:
           --namespace nexus --create-namespace \
           --set service.type=LoadBalancer \
           --wait --timeout 10m
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=nexus -n nexus --timeout=600s
 
-  # ---------------- Output URLs ----------------
+  # ---------------- Output URLs & credentials ----------------
   - task: AWSShellScript@1
     displayName: Print URLs & credentials
     inputs:
@@ -188,22 +186,37 @@ jobs:
       regionName: $(AWS_REGION)
       scriptType: inline
       inlineScript: |
-        echo "========== URLs =========="
-        kubectl -n ingress-nginx get svc ingress-nginx-controller
-        kubectl -n argocd get svc argocd-server
-        kubectl -n vault get svc vault
-        kubectl -n sonarqube get svc sonarqube
-        kubectl -n nexus get svc nexus
+        set -euo pipefail
+
+        echo "========== Service URLs =========="
+        echo "Nginx Ingress:"
+        kubectl -n ingress-nginx get svc ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{"\n"}'
+        
+        echo "ArgoCD:"
+        kubectl -n argocd get svc argocd-server -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{"\n"}'
+
+        echo "Vault (dev mode):"
+        kubectl -n vault get svc vault -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{"\n"}'
+
+        echo "SonarQube:"
+        kubectl -n sonarqube get svc sonarqube -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{"\n"}'
+
+        echo "Nexus:"
+        kubectl -n nexus get svc nexus -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{"\n"}'
 
         echo "========== Credentials =========="
         echo "ArgoCD password:"
-        echo "kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 --decode"
+        kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 --decode
+        echo
 
         echo "Vault root token (dev):"
-        echo "kubectl -n vault logs -l app.kubernetes.io/name=vault | grep 'Root Token'"
+        kubectl -n vault logs -l app.kubernetes.io/name=vault | grep 'Root Token'
+        echo
 
         echo "SonarQube password:"
-        echo "kubectl -n sonarqube get secret sonarqube -o jsonpath='{.data.sonar-password}' | base64 --decode"
+        kubectl -n sonarqube get secret sonarqube -o jsonpath='{.data.sonar-password}' | base64 --decode
+        echo
 
         echo "Nexus password:"
-        echo "kubectl -n nexus get secret nexus-admin-password -o jsonpath='{.data.password}' | base64 --decode"
+        kubectl -n nexus get secret nexus-admin-password -o jsonpath='{.data.password}' | base64 --decode
+        echo
