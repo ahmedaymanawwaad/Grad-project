@@ -15,7 +15,7 @@ parameters:
     default: false
 
 variables:
-  TF_DIR: 'terrafrom'
+  TF_DIR: 'terraform'
   TF_VAR_FILE: '${{ parameters.env }}.tfvars'
   AWS_SERVICE_CONNECTION: 'aws-awwad'
   AWS_REGION: 'eu-central-1'
@@ -27,6 +27,7 @@ jobs:
 - job: Infrastructure
   displayName: 'Infrastructure Provisioning (VPC, EKS, Cognito, APIGW)'
   timeoutInMinutes: 120
+
   steps:
   - checkout: self
 
@@ -35,6 +36,9 @@ jobs:
     inputs:
       terraformVersion: latest
 
+  # -------------------------
+  # Terraform Init + State Cleanup
+  # -------------------------
   - task: AWSShellScript@1
     displayName: Terraform Init
     inputs:
@@ -44,30 +48,31 @@ jobs:
       inlineScript: |
         set -euo pipefail
         cd "$(TF_DIR)"
+
         terraform init
-        
-        # Clean up any legacy Kubernetes resources from state if they exist
-        echo "Checking for legacy Kubernetes resources in state..."
-        STATE_LIST=$(terraform state list 2>/dev/null || echo "")
-        
-        if [ -n "$STATE_LIST" ]; then
-          echo "$STATE_LIST" | grep -E "^kubernetes_" | while read -r resource; do
-            if [ -n "$resource" ]; then
-              echo "Removing ${resource} from state..."
-              terraform state rm "${resource}" 2>/dev/null || echo "Warning: Could not remove ${resource}"
-            fi
-          done
-          
-          echo "$STATE_LIST" | grep -E "^helm_" | while read -r resource; do
-            if [ -n "$resource" ]; then
-              echo "Removing ${resource} from state..."
-              terraform state rm "${resource}" 2>/dev/null || echo "Warning: Could not remove ${resource}"
-            fi
-          done
-        else
+
+        echo "Checking for legacy Kubernetes / Helm resources in state..."
+
+        STATE_LIST="$(terraform state list 2>/dev/null || true)"
+
+        if [ -z "$STATE_LIST" ]; then
           echo "No state file found or state is empty."
+          exit 0
         fi
 
+        for resource in $(echo "$STATE_LIST" | grep -E '^kubernetes_' || true); do
+          echo "Removing ${resource} from state..."
+          terraform state rm "${resource}" || true
+        done
+
+        for resource in $(echo "$STATE_LIST" | grep -E '^helm_' || true); do
+          echo "Removing ${resource} from state..."
+          terraform state rm "${resource}" || true
+        done
+
+  # -------------------------
+  # Terraform Apply / Destroy
+  # -------------------------
   - task: AWSShellScript@1
     displayName: Terraform Apply or Destroy
     inputs:
@@ -81,121 +86,73 @@ jobs:
         if [ "${{ parameters.destroy }}" = "True" ]; then
           echo "=== DESTROY MODE ==="
 
-          # Remove legacy Kubernetes namespace from state if it exists
-          if terraform state list 2>/dev/null | grep -q "kubernetes_namespace_v1.ingress_nginx"; then
-            echo "Removing legacy Kubernetes namespace from state..."
-            terraform state rm kubernetes_namespace_v1.ingress_nginx 2>/dev/null || true
-          fi
+          # Remove legacy namespace if present
+          terraform state list 2>/dev/null | grep -q "kubernetes_namespace_v1.ingress_nginx" && \
+            terraform state rm kubernetes_namespace_v1.ingress_nginx || true
 
-          # --- Pre-destroy cleanup: Delete orphaned ENIs, ELBs, and VPC Links ---
           if terraform output -raw vpc_id >/dev/null 2>&1; then
             VPC_ID="$(terraform output -raw vpc_id)"
             echo "Target VPC ID: $VPC_ID"
 
-            # 1. Delete API Gateway VPC Links that reference this VPC's subnets
-            echo "Checking for API Gateway VPC Links..."
-            VPC_LINK_IDS=$(aws apigatewayv2 get-vpc-links \
-              --query "Items[?SecurityGroupIds!=null].VpcLinkId" \
-              --output text 2>/dev/null || echo "")
-            
-            if [ -n "$VPC_LINK_IDS" ]; then
-              for link_id in $VPC_LINK_IDS; do
-                echo "Deleting API Gateway VPC Link: $link_id"
-                aws apigatewayv2 delete-vpc-link --vpc-link-id "$link_id" 2>/dev/null || true
-              done
-              echo "Waiting for VPC Link ENIs to be released..."
-              sleep 60
-            fi
+            # --- API Gateway VPC Links ---
+            VPC_LINK_IDS="$(aws apigatewayv2 get-vpc-links \
+              --query 'Items[].VpcLinkId' \
+              --output text 2>/dev/null || true)"
 
-            # 2. Delete Classic ELBs in the VPC
-            echo "Checking for Classic ELBs..."
-            ELB_NAMES=$(aws elb describe-load-balancers \
+            for link_id in $VPC_LINK_IDS; do
+              echo "Deleting API Gateway VPC Link: $link_id"
+              aws apigatewayv2 delete-vpc-link --vpc-link-id "$link_id" || true
+            done
+
+            [ -n "$VPC_LINK_IDS" ] && sleep 60
+
+            # --- Classic ELBs ---
+            for elb in $(aws elb describe-load-balancers \
               --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" \
-              --output text 2>/dev/null || echo "")
+              --output text 2>/dev/null || true); do
+              echo "Deleting Classic ELB: $elb"
+              aws elb delete-load-balancer --load-balancer-name "$elb" || true
+            done
 
-            if [ -n "$ELB_NAMES" ]; then
-              for elb in $ELB_NAMES; do
-                echo "Deleting Classic ELB: $elb"
-                aws elb delete-load-balancer --load-balancer-name "$elb" || true
-              done
-            else
-              echo "No Classic ELBs found."
-            fi
-
-            # 3. Delete ALB / NLB in the VPC
-            echo "Checking for ALB/NLB..."
-            ELB_ARNS=$(aws elbv2 describe-load-balancers \
+            # --- ALB / NLB ---
+            for arn in $(aws elbv2 describe-load-balancers \
               --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" \
-              --output text 2>/dev/null || echo "")
+              --output text 2>/dev/null || true); do
+              echo "Deleting ELBv2: $arn"
+              aws elbv2 delete-load-balancer --load-balancer-arn "$arn" || true
+            done
 
-            if [ -n "$ELB_ARNS" ]; then
-              for arn in $ELB_ARNS; do
-                echo "Deleting ELBv2: $arn"
-                aws elbv2 delete-load-balancer --load-balancer-arn "$arn" || true
-              done
-              echo "Waiting for ELBv2 deletion..."
-              sleep 30
-            else
-              echo "No ELBv2 found."
-            fi
+            sleep 30
 
-            # 4. Delete orphaned ENIs in the VPC (the key fix for subnet deletion)
-            echo "Checking for orphaned ENIs in VPC..."
-            ENI_IDS=$(aws ec2 describe-network-interfaces \
-              --filters "Name=vpc-id,Values=$VPC_ID" \
-              --query "NetworkInterfaces[?Status=='available'].NetworkInterfaceId" \
-              --output text 2>/dev/null || echo "")
+            # --- Orphaned ENIs ---
+            for eni in $(aws ec2 describe-network-interfaces \
+              --filters "Name=vpc-id,Values=$VPC_ID" "Name=status,Values=available" \
+              --query 'NetworkInterfaces[].NetworkInterfaceId' \
+              --output text 2>/dev/null || true); do
+              echo "Deleting orphaned ENI: $eni"
+              aws ec2 delete-network-interface --network-interface-id "$eni" || true
+            done
 
-            if [ -n "$ENI_IDS" ]; then
-              for eni in $ENI_IDS; do
-                echo "Deleting orphaned ENI: $eni"
-                aws ec2 delete-network-interface --network-interface-id "$eni" 2>/dev/null || true
-              done
-            else
-              echo "No orphaned ENIs found."
-            fi
-
-            # 5. Detach and delete in-use ENIs (from VPC Link, EKS, etc.)
-            echo "Checking for in-use ENIs that need detaching..."
-            INUSE_ENIS=$(aws ec2 describe-network-interfaces \
+            # --- Detach + delete in-use ENIs ---
+            aws ec2 describe-network-interfaces \
               --filters "Name=vpc-id,Values=$VPC_ID" "Name=status,Values=in-use" \
-              --query "NetworkInterfaces[?Attachment.DeleteOnTermination==\`false\` && !starts_with(Description, 'Amazon EKS')].{Id:NetworkInterfaceId,AttachId:Attachment.AttachmentId}" \
-              --output json 2>/dev/null || echo "[]")
+              --query "NetworkInterfaces[?Attachment.DeleteOnTermination==\`false\` && !starts_with(Description, 'Amazon EKS')].[NetworkInterfaceId,Attachment.AttachmentId]" \
+              --output text 2>/dev/null | \
+            while read -r eni attach; do
+              [ -z "$eni" ] && continue
+              echo "Detaching ENI: $eni"
+              aws ec2 detach-network-interface --attachment-id "$attach" --force || true
+            done
 
-            if [ "$INUSE_ENIS" != "[]" ] && [ -n "$INUSE_ENIS" ]; then
-              echo "$INUSE_ENIS" | python3 -c "
-        import sys, json
-        data = json.load(sys.stdin)
-        for eni in data:
-            print(f\"{eni['Id']} {eni.get('AttachId', '')}\")
-        " 2>/dev/null | while read -r eni_id attach_id; do
-                if [ -n "$attach_id" ]; then
-                  echo "Detaching ENI: $eni_id (attachment: $attach_id)"
-                  aws ec2 detach-network-interface --attachment-id "$attach_id" --force 2>/dev/null || true
-                fi
-              done
-              
-              echo "Waiting for ENI detachment..."
-              sleep 30
-              
-              # Now delete the detached ENIs
-              AVAILABLE_ENIS=$(aws ec2 describe-network-interfaces \
-                --filters "Name=vpc-id,Values=$VPC_ID" "Name=status,Values=available" \
-                --query "NetworkInterfaces[].NetworkInterfaceId" \
-                --output text 2>/dev/null || echo "")
-              
-              if [ -n "$AVAILABLE_ENIS" ]; then
-                for eni in $AVAILABLE_ENIS; do
-                  echo "Deleting detached ENI: $eni"
-                  aws ec2 delete-network-interface --network-interface-id "$eni" 2>/dev/null || true
-                done
-              fi
-            else
-              echo "No in-use ENIs to detach."
-            fi
+            sleep 30
 
-          else
-            echo "Terraform state not found. Skipping AWS pre-destroy cleanup."
+            for eni in $(aws ec2 describe-network-interfaces \
+              --filters "Name=vpc-id,Values=$VPC_ID" "Name=status,Values=available" \
+              --query 'NetworkInterfaces[].NetworkInterfaceId' \
+              --output text 2>/dev/null || true); do
+              echo "Deleting detached ENI: $eni"
+              aws ec2 delete-network-interface --network-interface-id "$eni" || true
+            done
           fi
 
           echo "=== Running Terraform Destroy ==="
@@ -204,5 +161,5 @@ jobs:
           exit 0
         fi
 
-        echo "Running Terraform Apply..."
+        echo "=== Running Terraform Apply ==="
         terraform apply -auto-approve -var-file="$(TF_VAR_FILE)"
