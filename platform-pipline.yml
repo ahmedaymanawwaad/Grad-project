@@ -10,7 +10,7 @@ parameters:
 
   - name: cluster_name
     type: string
-    default: ''
+    default: 'terraform'
 
 variables:
   TF_DIR: 'terraform'
