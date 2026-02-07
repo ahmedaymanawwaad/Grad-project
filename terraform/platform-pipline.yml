@@ -1,0 +1,189 @@
+name: $(Date:yyyyMMdd)$(Rev:.r)-Cluster-Tools
+trigger: none
+pr: none
+
+parameters:
+  - name: env
+    type: string
+    default: nonprod
+    values: [nonprod, prod]
+
+  - name: cluster_name
+    type: string
+    default: ''
+
+variables:
+  TF_DIR: 'terraform'
+  TF_VAR_FILE: '${{ parameters.env }}.tfvars'
+  AWS_SERVICE_CONNECTION: 'aws-awwad'
+  AWS_REGION: 'eu-central-1'
+
+pool:
+  vmImage: ubuntu-latest
+
+jobs:
+- job: tools
+  displayName: Install cluster tools
+  timeoutInMinutes: 90
+  steps:
+  - checkout: self
+
+  # ---------------- Terraform ----------------
+  - task: TerraformInstaller@1
+    displayName: Install Terraform
+    inputs:
+      terraformVersion: latest
+
+  - task: AWSShellScript@1
+    displayName: Terraform Init
+    inputs:
+      awsCredentials: $(AWS_SERVICE_CONNECTION)
+      regionName: $(AWS_REGION)
+      scriptType: inline
+      inlineScript: |
+        set -e
+        cd "$(TF_DIR)"
+        terraform init -input=false
+
+  # ---------------- kubeconfig ----------------
+  - task: AWSShellScript@1
+    displayName: Configure kubeconfig
+    inputs:
+      awsCredentials: $(AWS_SERVICE_CONNECTION)
+      regionName: $(AWS_REGION)
+      scriptType: inline
+      inlineScript: |
+        set -e
+
+        CLUSTER_NAME="${{ parameters.cluster_name }}"
+        cd "$(TF_DIR)"
+
+        if [ -z "$CLUSTER_NAME" ]; then
+          CLUSTER_NAME="$(terraform output -raw cluster_name 2>/dev/null || terraform output -raw eks_cluster_name)"
+        fi
+
+        echo "Using cluster: $CLUSTER_NAME"
+        aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$(AWS_REGION)"
+        kubectl get nodes
+
+  # ---------------- Helm ----------------
+  - task: AWSShellScript@1
+    displayName: Install Helm
+    inputs:
+      awsCredentials: $(AWS_SERVICE_CONNECTION)
+      regionName: $(AWS_REGION)
+      scriptType: inline
+      inlineScript: |
+        set -e
+        if ! command -v helm >/dev/null; then
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        fi
+        helm version
+
+  - task: AWSShellScript@1
+    displayName: Add Helm repos
+    inputs:
+      awsCredentials: $(AWS_SERVICE_CONNECTION)
+      regionName: $(AWS_REGION)
+      scriptType: inline
+      inlineScript: |
+        helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+        helm repo add argo https://argoproj.github.io/argo-helm
+        helm repo add hashicorp https://helm.releases.hashicorp.com
+        helm repo add bitnami https://charts.bitnami.com/bitnami
+        helm repo add sonatype https://sonatype.github.io/helm3-charts
+        helm repo update
+
+  # ---------------- nginx ingress ----------------
+  - task: AWSShellScript@1
+    displayName: Install nginx-ingress
+    inputs:
+      awsCredentials: $(AWS_SERVICE_CONNECTION)
+      regionName: $(AWS_REGION)
+      scriptType: inline
+      inlineScript: |
+        helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+          --namespace ingress-nginx --create-namespace \
+          --set controller.service.type=LoadBalancer \
+          --wait --timeout 10m
+
+  # ---------------- ArgoCD ----------------
+  - task: AWSShellScript@1
+    displayName: Install ArgoCD
+    inputs:
+      awsCredentials: $(AWS_SERVICE_CONNECTION)
+      regionName: $(AWS_REGION)
+      scriptType: inline
+      inlineScript: |
+        helm upgrade --install argocd argo/argo-cd \
+          --namespace argocd --create-namespace \
+          --set server.service.type=LoadBalancer \
+          --wait --timeout 10m
+
+  # ---------------- Vault ----------------
+  - task: AWSShellScript@1
+    displayName: Install Vault (dev)
+    inputs:
+      awsCredentials: $(AWS_SERVICE_CONNECTION)
+      regionName: $(AWS_REGION)
+      scriptType: inline
+      inlineScript: |
+        helm upgrade --install vault hashicorp/vault \
+          --namespace vault --create-namespace \
+          --set server.dev.enabled=true \
+          --set server.service.type=LoadBalancer \
+          --wait --timeout 10m
+
+  # ---------------- SonarQube ----------------
+  - task: AWSShellScript@1
+    displayName: Install SonarQube
+    inputs:
+      awsCredentials: $(AWS_SERVICE_CONNECTION)
+      regionName: $(AWS_REGION)
+      scriptType: inline
+      inlineScript: |
+        helm upgrade --install sonarqube bitnami/sonarqube \
+          --namespace sonarqube --create-namespace \
+          --set service.type=LoadBalancer \
+          --wait --timeout 15m
+
+  # ---------------- Nexus ----------------
+  - task: AWSShellScript@1
+    displayName: Install Nexus
+    inputs:
+      awsCredentials: $(AWS_SERVICE_CONNECTION)
+      regionName: $(AWS_REGION)
+      scriptType: inline
+      inlineScript: |
+        helm upgrade --install nexus sonatype/nexus-repository-manager \
+          --namespace nexus --create-namespace \
+          --set service.type=LoadBalancer \
+          --wait --timeout 10m
+
+  # ---------------- Output URLs ----------------
+  - task: AWSShellScript@1
+    displayName: Print URLs & credentials
+    inputs:
+      awsCredentials: $(AWS_SERVICE_CONNECTION)
+      regionName: $(AWS_REGION)
+      scriptType: inline
+      inlineScript: |
+        echo "========== URLs =========="
+        kubectl -n ingress-nginx get svc ingress-nginx-controller
+        kubectl -n argocd get svc argocd-server
+        kubectl -n vault get svc vault
+        kubectl -n sonarqube get svc sonarqube
+        kubectl -n nexus get svc nexus
+
+        echo "========== Credentials =========="
+        echo "ArgoCD password:"
+        echo "kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 --decode"
+
+        echo "Vault root token (dev):"
+        echo "kubectl -n vault logs -l app.kubernetes.io/name=vault | grep 'Root Token'"
+
+        echo "SonarQube password:"
+        echo "kubectl -n sonarqube get secret sonarqube -o jsonpath='{.data.sonar-password}' | base64 --decode"
+
+        echo "Nexus password:"
+        echo "kubectl -n nexus get secret nexus-admin-password -o jsonpath='{.data.password}' | base64 --decode"
